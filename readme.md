@@ -52,3 +52,5 @@ If you have any question or want to use the code, please contact yuweichen16@mai
 We appreciate the following Opengait github repo for their valuable code base:
 
 https://github.com/ShiqiYu/OpenGait
+
+We appreciate the support from [[Watrix](http://www.watrix.ai/)]
