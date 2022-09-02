@@ -172,7 +172,10 @@ def ddp_all_gather(features, dim=0, requires_grad=True):
 
     world_size = torch.distributed.get_world_size()
     rank = torch.distributed.get_rank()
-    feature_list = [torch.ones_like(features) for _ in range(world_size)]
+    try:
+        feature_list = [torch.ones_like(features) for _ in range(world_size)]
+    except:
+        import pdb; pdb.set_trace()
     torch.distributed.all_gather(feature_list, features.contiguous())
 
     if requires_grad:

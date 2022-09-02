@@ -2,10 +2,10 @@ import math
 import random
 import numpy as np
 from utils import get_msg_mgr
-
+from .data_transforms import build_data_transforms
 
 class CollateFn(object):
-    def __init__(self, label_set, sample_config):
+    def __init__(self, label_set, sample_config,da):
         self.label_set = label_set
         sample_type = sample_config['sample_type']
         sample_type = sample_type.split('_')
@@ -16,7 +16,7 @@ class CollateFn(object):
         if self.ordered not in ['ordered', 'unordered']:
             raise ValueError
         self.ordered = sample_type[1] == 'ordered'
-
+        self.data_augment = da
         # fixed cases
         if self.sampler == 'fixed':
             self.frames_num_fixed = sample_config['frames_num_fixed']
@@ -33,9 +33,15 @@ class CollateFn(object):
         if self.sampler == 'all' and 'frames_all_limit' in sample_config:
             self.frames_all_limit = sample_config['frames_all_limit']
 
+        self.data_transforms = self.data_transforms = build_data_transforms(random_erasing=False, random_rotate=False, \
+                                        random_horizontal_flip=False, random_pad_crop=False, cloth_dilate=False,\
+                                        resolution=64, random_seed=2019) 
+        self.data_transforms_new = build_data_transforms(random_erasing=False, random_rotate=False, \
+                                        random_horizontal_flip=False, random_pad_crop=False, cloth_dilate=False,\
+                                        resolution=64, random_seed=2020) 
+
     def __call__(self, batch):
         batch_size = len(batch)
-        # currently, the functionality of feature_num is not fully supported yet, it refers to 1 now. We are supposed to make our framework support multiple source of input data, such as silhouette, or skeleton.
         feature_num = len(batch[0][0])
         seqs_batch, labs_batch, typs_batch, vies_batch = [], [], [], []
 
@@ -80,7 +86,7 @@ class CollateFn(object):
 
                     if seq_len == 0:
                         get_msg_mgr().log_debug('Find no frames in the sequence %s-%s-%s.'
-                                                % (str(labs_batch[count]), str(typs_batch[count]), str(vies_batch[count])))
+                            %(str(labs_batch[count]), str(typs_batch[count]), str(vies_batch[count])))
 
                     count += 1
                     indices = np.random.choice(
@@ -110,6 +116,26 @@ class CollateFn(object):
             fras_batch = [[my_cat(k)] for k in range(feature_num)]  # [f, g]
 
             batch[-1] = np.asarray(seqL_batch)
+
+        #################da###################
+        def transform_seq(index):
+            sample = fras_batch[0][index]
+            return self.data_transforms(np.array(sample))
+            ############为了多加一部分的loss###################
+        def transform_seq_new(index):
+            sample = fras_batch[0][index]
+            return self.data_transforms_new(np.array(sample))
+        if self.data_augment:
+            seqs_original = list(map(transform_seq, range(len(fras_batch[0]))))  
+            seqs_da = list(map(transform_seq_new, range(len(fras_batch[0])))) 
+            seqs = [seqs_original,seqs_da]
+            # fras_batch = np.concatenate(seqs, axis=0)
+            fras_batch = np.concatenate([seqs_original], axis=0)
+            fras_batch = fras_batch[np.newaxis,:,:,:,:]
+            # label = np.concatenate([labs_batch,labs_batch], axis=0)
+            label = labs_batch
+            batch[1] = label
+
 
         batch[0] = fras_batch
         return batch

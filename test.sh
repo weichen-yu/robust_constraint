@@ -1,6 +1,6 @@
 # # **************** For CASIA-B ****************
 # # Baseline
-CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2 lib/main.py --cfgs ./config/baseline.yaml --phase test
+# CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2 lib/main.py --cfgs ./config/baseline.yaml --phase test
 
 # # GaitSet
 # CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2 lib/main.py --cfgs ./config/gaitset.yaml --phase test
@@ -9,7 +9,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2 l
 # CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2 lib/main.py --cfgs ./config/gaitpart.yaml --phase test
 
 # GaitGL
-# CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.launch --master_port 12345 --nproc_per_node=4 lib/main.py --cfgs ./config/gaitgl.yaml --phase test
+# CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.launch --master_port 16345 --nproc_per_node=8 lib/main.py --cfgs ./config/gaitgl.yaml --phase test
 
 # # GLN 
 # # Phase 1
@@ -29,4 +29,4 @@ CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2 l
 # CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.launch --nproc_per_node=8 lib/main.py --cfgs ./config/gaitpart_OUMVLP.yaml --phase test
 
 # GaitGL
-# CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.launch --nproc_per_node=8 lib/main.py --cfgs ./config/gaitgl_OUMVLP.yaml --phase test
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python -m torch.distributed.launch --nproc_per_node=8 lib/main.py --cfgs ./config/gaitgl_OUMVLP.yaml --phase test

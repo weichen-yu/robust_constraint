@@ -97,6 +97,7 @@ class MessageManager:
         self.append(info)
         if self.iteration % self.log_iter == 0:
             self.log_training_info()
+            self.log_info("lr: {:.6f}".format(summary['scalar/learning_rate']))
             self.flush()
             self.write_to_tensorboard(summary)
 

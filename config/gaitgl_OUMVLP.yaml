@@ -1,9 +1,9 @@
 # Note  : *** the batch_size should be equal to the gpus number at the test phase!!! ***
 data_cfg:
   dataset_name: OUMVLP
-  dataset_root: your_path
+  dataset_root: '/home2/ywc/workspace/silhouette_cut_pkl'
   dataset_partition: ./misc/partitions/OUMVLP.json
-  num_workers: 1
+  num_workers: 4
   remove_no_gallery: false
   test_dataset_name: OUMVLP
 
@@ -14,7 +14,7 @@ evaluator_cfg:
   restore_hint: 210000
   save_name: GaitGL
   sampler:
-    batch_size: 2
+    batch_size: 8
     sample_type: all_ordered
     type: InferenceSampler
 
@@ -23,6 +23,10 @@ loss_cfg:
     margin: 0.2
     type: TripletLoss
     log_prefix: triplet
+  - loss_term_weight: 1.0
+    margin: 0.2
+    type: InfoLoss
+    log_prefix: infonce
   - loss_term_weight: 1.0
     scale: 1
     type: CrossEntropyLoss
@@ -35,23 +39,36 @@ model_cfg:
   channels: [32, 64, 128, 256]
   class_num: 5153
 
+  #optimizer_cfg:
+  #  lr: 1.0e-4
+  #  solver: Adam
+  #  weight_decay: 0
+
 optimizer_cfg:
-  lr: 1.0e-4
-  solver: Adam
-  weight_decay: 0
+  lr: 0.1
+  momentum: 0.9
+  solver: SGD
+  weight_decay: 0.0005
+  #scheduler_cfg:
+  #  gamma: 0.1
+  #  milestones:
+  #    - 150000
+  #    - 200000
+  #  scheduler: MultiStepLR
 
 scheduler_cfg:
-  gamma: 0.1
-  milestones:
-    - 150000
-    - 200000
-  scheduler: MultiStepLR
+  scheduler: CosineLRScheduler
+  t_initial: 210000
+  lr_min: 1.0e-4
+  warmup_t: 4000
+  warmup_lr_init: 1.0e-6
+  k_decay: 1.0
 
 trainer_cfg:
   enable_distributed: true
   enable_float16: true
   with_test: false
-  log_iter: 100
+  log_iter: 10
   restore_ckpt_strict: true
   restore_hint: 0
   save_iter: 10000

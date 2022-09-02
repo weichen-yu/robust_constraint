@@ -108,6 +108,7 @@ def identification(data, dataset, metric='euc'):
         msg_mgr.log_info('NM: %.3f ' % (np.mean(acc[0, :, :, 0])))
         msg_mgr.log_info('===Rank-1 (Exclude identical-view cases)===')
         msg_mgr.log_info('NM: %.3f ' % (de_diag(acc[0, :, :, 0])))
+        msg_mgr.log_info(de_diag(acc[0, :, :, 0], each_angle=True))
         result_dict["scalar/test_accuracy/NM"] = de_diag(acc[0, :, :, 0])
     return result_dict
 

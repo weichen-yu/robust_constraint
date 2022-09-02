@@ -10,12 +10,12 @@ BaseModel.run_train(model)
 BaseModel.run_test(model)
 """
 import torch
+import copy
 import numpy as np
 import os.path as osp
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as tordata
-import timm
 
 from tqdm import tqdm
 from torch.cuda.amp import autocast
@@ -25,20 +25,21 @@ from abc import abstractmethod
 
 from . import backbones
 from .loss_aggregator import LossAggregator
+from .losses import SoftLoss, newNCE
 from data.transform import get_transform
 from data.collate_fn import CollateFn
 from data.dataset import DataSet
 import data.sampler as Samplers
-from utils import Odict, mkdir, ddp_all_gather
+from utils import Odict, mkdir, ddp_all_gather, get_ddp_module
 from utils import get_valid_args, is_list, is_dict, np2var, ts2np, list2var, get_attr_from
 from utils import evaluation as eval_functions
 from utils import NoOp
 from utils import get_msg_mgr
-from timm.scheduler import * # CosineLRScheduler, MultiStepLRScheduler, PlateauLRScheduler, PolyLRScheduler, StepLRScheduler, TanhLRScheduler
-
 
 __all__ = ['BaseModel']
 
+def decay_func(current_iter, total_iter, inter_iter=0):
+        return np.sin(np.pi*0.5 * (current_iter - inter_iter) / (total_iter - inter_iter))
 
 class MetaModel(metaclass=ABCMeta):
     """The necessary functions for the base model.
@@ -136,7 +137,15 @@ class BaseModel(MetaModel, nn.Module):
         self.msg_mgr = get_msg_mgr()
         self.cfgs = cfgs
         self.iteration = 0
-        self.ssl_iter = 50000
+        self.kd_iter = 50000
+        self.ema = 0.99
+        self.soft_loss = get_ddp_module(SoftLoss().cuda())
+
+        world_size = torch.distributed.get_world_size()
+        nce_batch_size = copy.deepcopy(cfgs['trainer_cfg']['sampler']['batch_size'])
+        # nce_batch_size[0] = nce_batch_size[0] // world_size
+        self.infonce_loss = get_ddp_module(newNCE(nce_batch_size).cuda())
+
         self.engine_cfg = cfgs['trainer_cfg'] if training else cfgs['evaluator_cfg']
         if self.engine_cfg is None:
             raise Exception("Initialize a model without -Engine-Cfgs-")
@@ -164,8 +173,10 @@ class BaseModel(MetaModel, nn.Module):
 
         if training:
             self.loss_aggregator = LossAggregator(cfgs['loss_cfg'])
+            self.loss_aggregator_mo = LossAggregator([cfgs['loss_cfg'][0]])
             self.optimizer = self.get_optimizer(self.cfgs['optimizer_cfg'])
             self.scheduler = self.get_scheduler(cfgs['scheduler_cfg'])
+
         self.train(training)
         restore_hint = self.engine_cfg['restore_hint']
         if restore_hint != 0:
@@ -219,7 +230,7 @@ class BaseModel(MetaModel, nn.Module):
         loader = tordata.DataLoader(
             dataset=dataset,
             batch_sampler=sampler,
-            collate_fn=CollateFn(dataset.label_set, sampler_cfg, da=train),
+            collate_fn=CollateFn(dataset.label_set, sampler_cfg, da=True),
             num_workers=data_cfg['num_workers'])
         return loader
 
@@ -233,29 +244,31 @@ class BaseModel(MetaModel, nn.Module):
 
     def get_scheduler(self, scheduler_cfg):
         self.msg_mgr.log_info(scheduler_cfg)
-        Scheduler = getattr(timm.scheduler, scheduler_cfg['scheduler'])
-        valid_arg = {'t_initial': 0, 'lr_min': 5e-06, 'warmup_t': 4000, 'warmup_lr_init': 1e-06, 'k_decay': 1.0}
-        for k in valid_arg.keys():
-            valid_arg[k] = scheduler_cfg[k]
-        # valid_arg = scheduler_cfg[scheduler_cfg['scheduler']]
-        # Scheduler = get_attr_from(
-        #    [optim.lr_scheduler], scheduler_cfg['scheduler'])
-        # valid_arg = get_valid_args(Scheduler, scheduler_cfg, ['scheduler'])
-        # scheduler = Scheduler(self.optimizer, **valid_arg)
+        Scheduler = get_attr_from(
+            [optim.lr_scheduler], scheduler_cfg['scheduler'])
+        valid_arg = get_valid_args(Scheduler, scheduler_cfg, ['scheduler'])
         scheduler = Scheduler(self.optimizer, **valid_arg)
         return scheduler
 
-    def save_ckpt(self, iteration):
+    def save_ckpt(self, iteration, model_mo):
         if torch.distributed.get_rank() == 0:
             mkdir(osp.join(self.save_path, "checkpoints/"))
             save_name = self.engine_cfg['save_name']
+            save_name_mo = self.engine_cfg['save_name'] + "_mo"
             checkpoint = {
                 'model': self.state_dict(),
                 'optimizer': self.optimizer.state_dict(),
                 'scheduler': self.scheduler.state_dict(),
                 'iteration': iteration}
+            checkpoint_mo = {
+                'model': model_mo.module.state_dict(),
+                'optimizer': self.optimizer.state_dict(),
+                'scheduler': self.scheduler.state_dict(),
+                'iteration': iteration}
             torch.save(checkpoint,
                        osp.join(self.save_path, 'checkpoints/{}-{:0>5}.pt'.format(save_name, iteration)))
+            torch.save(checkpoint_mo,
+                       osp.join(self.save_path, 'checkpoints/{}-{:0>5}.pt'.format(save_name_mo, iteration)))
 
     def _load_ckpt(self, save_name):
         load_ckpt_strict = self.engine_cfg['restore_ckpt_strict']
@@ -367,7 +380,7 @@ class BaseModel(MetaModel, nn.Module):
             self.optimizer.step()
 
         self.iteration += 1
-        self.scheduler.step(self.iteration)
+        self.scheduler.step()
         return True
 
     def inference(self, rank):
@@ -410,18 +423,78 @@ class BaseModel(MetaModel, nn.Module):
         return info_dict
 
     @ staticmethod
-    def run_train(model):
+    def run_train(model, model_mo):
         """Accept the instance object(model) here, and then run the train loop."""
         for inputs in model.train_loader:
+            # EMA
+            for param_b, param_m in zip(model.parameters(), model_mo.parameters()):
+                    param_m.data = param_m.data * model.ema + param_b.data * (1. - model.ema)
+
             ipts = model.inputs_pretreament(inputs)
             with autocast(enabled=model.engine_cfg['enable_float16']):
-                retval = model(ipts)
+                batch_num = len(ipts[1]) // 2
+                ipts_ori = [[ipts[0][0][:batch_num, ...]], ipts[1][:batch_num], ipts[2], ipts[3], ipts[4]]
+                ipts_mo = [[ipts[0][0][batch_num:, ...]], ipts[1][batch_num:], ipts[2], ipts[3], ipts[4]]
+                ipts_ori = tuple(ipts_ori)
+                ipts_mo = tuple(ipts_mo)
+
+                retval = model(ipts_ori)
                 training_feat, visual_summary = retval['training_feat'], retval['visual_summary']
                 del retval
-            if model.iteration > model.ssl_iter:
-                model.loss_aggregator.losses['infonce'].filter = True
+
+            # model.loss_aggregator.losses['softmax'].loss_term_weight = (3-2*decay_func(model.iteration, model.engine_cfg['total_iter']))
+            # model.loss_aggregator.losses['triplet'].loss_term_weight = (0.9+0.1*decay_func(model.iteration, model.engine_cfg['total_iter']))
+            # model_mo.loss_aggregator.losses['triplet'].loss_term_weight = (0.9+0.1*decay_func(model.iteration, model.engine_cfg['total_iter']))
+
+
             loss_sum, loss_info = model.loss_aggregator(training_feat)
+
+            # soft loss
+            if model.iteration > model.kd_iter:
+                model_mo.train()
+                retval_mo = model_mo(ipts_mo)
+                training_feat_mo = retval_mo['training_feat']
+                soft_loss = 0 * loss_sum
+                label_margin = 4.0
+                temperature = 0.5 - 0.49 * decay_func(model.iteration, model.engine_cfg['total_iter'],  model.kd_iter)
+                soft_target = training_feat_mo['softmax']['logits']
+                # soft_target = training_feat_mo['softmax']['logits'].detach()
+                model_logits = training_feat['softmax']['logits']
+                top2 = torch.topk(model_logits, 2)
+                mask = ((top2[0][..., 0] - top2[0][..., 1])>label_margin) * 0.5 + 0.5
+                soft_loss, soft_loss_info = model.soft_loss(model_logits, soft_target, mask, temperature)
+
+                del training_feat_mo['softmax']
+                loss_sum_mo, loss_info_mo = model.loss_aggregator_mo(training_feat_mo)
+                soft_loss = soft_loss.mean()*(0.1+0.9*decay_func(model.iteration, model.engine_cfg['total_iter'], model.kd_iter))
+                #NCE los
+                infonce_loss_ori, infonce_loss_info_ori = model.infonce_loss(training_feat['triplet']['embeddings'], training_feat['triplet']['embeddings'], training_feat['triplet']['labels'])
+                infonce_loss_mo, infonce_loss_info_mo = model.infonce_loss(training_feat_mo['triplet']['embeddings'], training_feat_mo['triplet']['embeddings'], training_feat['triplet']['labels'])
+                for k, v in infonce_loss_info_ori.items():
+                    loss_info[k] = (infonce_loss_info_mo[k] + v)
+            else:
+                model_mo.eval()
+                loss_sum_mo, loss_info_mo = 0, {}
+                soft_loss, soft_loss_info = 0, {}
+                for k, v in soft_loss_info.items():
+                    soft_loss_info[k] = 0.
+                infonce_loss_mo, infonce_loss_info_mo = 0, {}
+                infonce_loss_ori, infonce_loss_info_ori = 0, {}
+
+                for k, v in infonce_loss_info_ori.items():
+                    loss_info[k] =v
+
+
+            infonce_loss = (infonce_loss_mo + infonce_loss_ori)
+            loss_sum = loss_sum + soft_loss + loss_sum_mo + infonce_loss
+            for k, v in loss_info_mo.items():
+                loss_info[k] += v
+            for k, v in soft_loss_info.items():
+                loss_info[k] = v * (0.1+0.9*decay_func(model.iteration, model.engine_cfg['total_iter'], model.kd_iter))
+
             ok = model.train_step(loss_sum)
+            model_mo.optimizer.step()
+            model_mo.scheduler.step()
             if not ok:
                 continue
 
@@ -431,7 +504,8 @@ class BaseModel(MetaModel, nn.Module):
             model.msg_mgr.train_step(loss_info, visual_summary)
             if model.iteration % model.engine_cfg['save_iter'] == 0:
                 # save the checkpoint
-                model.save_ckpt(model.iteration)
+                model.save_ckpt(model.iteration, model_mo)
+                # model_mo.save_ckpt(model.iteration)
 
                 # run test if with_test = true
                 if model.engine_cfg['with_test']:
@@ -472,4 +546,3 @@ class BaseModel(MetaModel, nn.Module):
             except:
                 dataset_name = model.cfgs['data_cfg']['dataset_name']
             return eval_func(info_dict, dataset_name, **valid_args)
-

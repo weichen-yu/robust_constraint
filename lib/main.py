@@ -67,3 +67,4 @@ if __name__ == '__main__':
     training = (opt.phase == 'train')
     initialization(cfgs, training)
     run_model(cfgs, training)
+

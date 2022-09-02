@@ -1,7 +1,7 @@
 # Note  : *** the batch_size should be equal to the gpus number at the test phase!!! ***
 data_cfg:
   dataset_name: CASIA-B
-  dataset_root: your_path
+  dataset_root: /home/hongyuan/dmw/output_pkl_64
   dataset_partition: ./misc/partitions/CASIA-B_include_005.json
   num_workers: 1
   remove_no_gallery: false
@@ -11,7 +11,7 @@ evaluator_cfg:
   enable_distributed: true
   enable_float16: false 
   restore_ckpt_strict: true
-  restore_hint: 80000
+  restore_hint: 79000
   save_name: GaitGL
   sampler:
     batch_size: 4
@@ -23,7 +23,11 @@ loss_cfg:
     margin: 0.2
     type: TripletLoss
     log_prefix: triplet
-  - loss_term_weight: 1.0
+  - loss_term_weight: 0.0
+    margin: 0.2
+    type: InfoLoss
+    log_prefix: infonce
+  - loss_term_weight: 0.0
     scale: 1
     type: CrossEntropyLoss
     log_accuracy: true
@@ -36,23 +40,31 @@ model_cfg:
   class_num: 74
 
 optimizer_cfg:
-  lr: 1.0e-4
-  solver: Adam
-  weight_decay: 5.0e-4
+  lr: 0.1
+  momentum: 0.9
+  solver: SGD
+  weight_decay: 0.0005
+
+#optimizer_cfg:
+#  lr: 2.0e-4
+#  solver: Adam
+#  weight_decay: 5.0e-4
 
 scheduler_cfg:
-  gamma: 0.1
-  milestones:
-    - 70000
-  scheduler: MultiStepLR
+  scheduler: CosineLRScheduler
+  t_initial: 80000
+  lr_min: 1.0e-4
+  warmup_t: 2000
+  warmup_lr_init: 1.0e-6
+  k_decay: 1.0
 
 trainer_cfg:
   enable_distributed: true
   enable_float16: false
-  log_iter: 100
+  log_iter: 10
   restore_ckpt_strict: true
-  restore_hint: 0
-  save_iter: 10000
+  restore_hint: 20000
+  save_iter: 1000
   save_name: GaitGL
   sync_BN: true
   total_iter: 80000

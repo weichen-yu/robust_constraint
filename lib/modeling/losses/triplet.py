@@ -18,6 +18,19 @@ class TripletLoss(BaseLoss):
 
         ref_embed, ref_label = embeddings, labels
         dist = self.ComputeDistance(embeddings, ref_embed)  # [p, n1, n2]
+
+        # sim matrix
+        embeddings_norm = F.normalize(embeddings, dim=-1) 
+        sim_matrix = torch.einsum('nck,njk->ncj', embeddings_norm, embeddings_norm)
+        # print("sim max {} sim min {}".format(sim_matrix.max().item(), sim_matrix.min().item()))
+        # weights matrix
+        eps = 0.01
+        weights_matrix = 1. - (sim_matrix + 1)/2. + eps
+        # norm
+        weights_matrix = 1.0 + weights_matrix / weights_matrix.max()
+        # print("w max {} w min {}".format(weights_matrix.max().item(), weights_matrix.min().item()))
+        dist = dist * weights_matrix.detach()
+
         mean_dist = dist.mean(1).mean(1)
         ap_dist, an_dist = self.Convert2Triplets(labels, ref_label, dist)
         dist_diff = ap_dist - an_dist
